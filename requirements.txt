@@ -1,0 +1,5 @@
+# Pinned so that a fresh checkout and CI agree on what "works" means.
+python-escpos==3.1
+Pillow==12.3.0
+Flask==3.1.3
+gunicorn==26.2.0

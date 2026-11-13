@@ -1,0 +1,55 @@
+# Example unit. Adjust User, paths and the printer address, then:
+#   sudo cp systemd/thermal-receipt-webui.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now thermal-receipt-webui
+
+[Unit]
+Description=Thermal receipt web interface (Flask + gunicorn)
+Documentation=https://github.com/fidpa/thermal-receipt-webui
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=receipt
+Group=receipt
+WorkingDirectory=/opt/thermal-receipt-webui
+
+# Print history lands in /var/lib/thermal-receipt-webui
+StateDirectory=thermal-receipt-webui
+StateDirectoryMode=0750
+
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+# gunicorn keeps its control socket under $HOME, and ProtectHome makes the real
+# home read only. The state directory is the writable home for this service.
+Environment="HOME=/var/lib/thermal-receipt-webui"
+Environment="RECEIPT_STATE_DIR=/var/lib/thermal-receipt-webui"
+# Printer address, optionally with a port. Empty means preview only: the
+# interface stays fully usable and the print button stays off.
+Environment="RECEIPT_PRINTER="
+
+# One worker: the renderer's glyph cache and the history lock live in the
+# process. Threads are enough, the load is one person typing.
+ExecStart=/opt/thermal-receipt-webui/.venv/bin/gunicorn \
+    --workers 1 --worker-class gthread --threads 4 \
+    --bind 127.0.0.1:8094 \
+    --timeout 30 \
+    --pythonpath /opt/thermal-receipt-webui/src \
+    receipt.web:create_app()
+
+Restart=on-failure
+RestartSec=10
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/thermal-receipt-webui
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

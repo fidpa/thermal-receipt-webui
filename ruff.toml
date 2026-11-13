@@ -1,0 +1,34 @@
+# Pinned in CI so local runs and the workflow agree. Without a pin a new ruff
+# release changes what "clean" means, and the first person to find out is
+# whoever opens a pull request against an unchanged tree.
+
+target-version = "py310"
+line-length = 100
+
+exclude = [".venv", "venv"]
+
+[lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # import sorting
+    "N",           # naming
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "A",           # shadowed builtins
+    "C4",          # comprehensions
+    "BLE",         # blind except: a swallowed error here means a silent misprint
+    "S",           # bandit
+    "G",           # logging format: no f-strings in logger calls
+    "SLF",         # private member access: the ESC/POS raw writes are the one
+                   # deliberate exception and carry a noqa saying so
+    "RUF",
+]
+ignore = [
+    "E501",        # line length is the formatter's job, not a lint error
+]
+
+[lint.per-file-ignores]
+# Tests reach into module internals on purpose: _wrap is where the promise
+# "no line is wider than the receipt" is actually kept.
+"tests/*" = ["S101", "SLF001"]
