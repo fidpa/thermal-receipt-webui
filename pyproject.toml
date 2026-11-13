@@ -1,7 +1,7 @@
 [project]
 name = "thermal-receipt-webui"
-version = "0.1.0"
-description = "Byte accurate ESC/POS receipt preview, command line tool and web interface"
+version = "0.1.1"
+description = "Byte-accurate ESC/POS receipt preview, command line tool and web interface"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

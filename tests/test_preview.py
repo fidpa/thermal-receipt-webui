@@ -17,6 +17,7 @@ from receipt.preview import (
     FONT_CELLS,
     LINE_FEED_DOTS,
     WIDTH_DOTS,
+    TooLongError,
     paper_cm,
     render,
 )
@@ -155,3 +156,11 @@ def test_a_truncated_raster_header_still_renders():
 def test_paper_cm_converts_at_203_dpi(dots, expected_cm):
     """Height in dots divided by 203 dpi, times 2.54."""
     assert paper_cm(dots) == pytest.approx(expected_cm)
+
+
+def test_the_height_bound_is_checked_before_the_image_exists():
+    """A stream of line feeds is refused instead of allocated."""
+    with pytest.raises(TooLongError) as refusal:
+        render(b"x" + b"\n" * 1000, max_height_dots=600)
+    assert refusal.value.height_dots > 600
+    assert render(b"x\n", max_height_dots=600).height <= 600

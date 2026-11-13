@@ -41,6 +41,7 @@ Include in your report:
 - The markup parser in `src/receipt/markup.py`
 - The history file handling in `src/receipt/history.py`
 - The idempotency keys, job ledger and paper budget in `src/receipt/jobs.py`, and the audit log in `src/receipt/audit.py`
+- The connection to the printer and its status decoding in `src/receipt/printer.py`
 
 ### Out of scope
 
@@ -56,7 +57,7 @@ This application has **no authentication of its own**. Anyone who can reach the 
 1. Bind gunicorn to `127.0.0.1` and let a reverse proxy be the only listener on a routable address.
 2. Add authentication at the proxy if the network it sits on is not trusted.
 3. The printer address is configuration, not user input. The application never takes a target host from a request.
-4. The history file holds the texts of recent prints. Treat it like any other document store.
+4. The state directory holds the texts of recent prints (`history.jsonl`) and, in `audit.jsonl` and `jobs.json`, the source addresses, keys and job identifiers of every attempt. Treat it like any other document store.
 5. The paper budget reads the client address from the rightmost element of `X-Forwarded-For`. Only a proxy that sets or appends that header keeps a caller from picking its own contingent.
 
 ## Disclosure Policy

@@ -102,6 +102,24 @@ class Refusal:
         }
 
 
+class LedgerUnavailableError(RuntimeError):
+    """The ledger exists but cannot be read.
+
+    Treating it as empty would forget every key and every charge, and the next
+    save would overwrite it: a retry under a known key would print a second
+    sheet. Nothing that relies on the ledger may proceed until it is readable.
+    """
+
+
+def _is_event(value: Any) -> bool:
+    """Whether a value is a consumption event, [Unix time, centimetres]."""
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(part, int | float) and not isinstance(part, bool) for part in value)
+    )
+
+
 def _empty_state() -> dict[str, Any]:
     """Return the initial state, before anything was ever printed."""
     return {"version": STATE_VERSION, "jobs": {}, "keys": {}, "free": {}, "job_events": []}
@@ -209,7 +227,7 @@ class Ledger:
             return _empty_state()
         except OSError as exc:
             logger.error("ledger %s not readable: %s", self.path, exc)
-            return _empty_state()
+            raise LedgerUnavailableError(str(exc)) from exc
 
         try:
             state = json.loads(raw)
@@ -220,7 +238,13 @@ class Ledger:
             logger.warning("ledger %s in a foreign format - starting over", self.path)
             return _empty_state()
 
-        return self._prune(state, now)
+        try:
+            return self._prune(state, now)
+        except (AttributeError, TypeError, ValueError):
+            # Valid JSON of the wrong shape, from a hand edit: treated like
+            # unparsable JSON instead of failing every request that reads it.
+            logger.warning("ledger %s in a foreign format - starting over", self.path)
+            return _empty_state()
 
     @staticmethod
     def _prune(state: dict[str, Any], now: float) -> dict[str, Any]:
@@ -228,22 +252,33 @@ class Ledger:
         keep_from = now - RETENTION_SECONDS
         events_from = now - EVENT_RETENTION_SECONDS
 
+        # Entries of the wrong shape are dropped one by one rather than
+        # discarding the whole state; a key without its checksum could not
+        # answer a retry anyway.
         jobs = {
             key: value
             for key, value in state.get("jobs", {}).items()
-            if value.get("updated_ts", 0) >= keep_from
+            if isinstance(value, dict) and value.get("updated_ts", 0) >= keep_from
         }
         keys = {
             key: value
             for key, value in state.get("keys", {}).items()
-            if value.get("at_ts", 0) >= keep_from
+            if isinstance(value, dict)
+            and isinstance(value.get("sha"), str)
+            and value.get("at_ts", 0) >= keep_from
         }
         free = {}
         for ip, events in state.get("free", {}).items():
-            kept = [event for event in events if event[0] >= events_from]
+            if not isinstance(events, list):
+                continue
+            kept = [event for event in events if _is_event(event) and event[0] >= events_from]
             if kept:
                 free[ip] = kept
-        job_events = [event for event in state.get("job_events", []) if event[0] >= events_from]
+        job_events = [
+            event
+            for event in state.get("job_events", [])
+            if _is_event(event) and event[0] >= events_from
+        ]
 
         return {
             "version": STATE_VERSION,
@@ -413,7 +448,12 @@ class Ledger:
         moment = time.time() if now is None else now
         stamp = datetime.fromtimestamp(moment).astimezone().isoformat(timespec="seconds")
         with self._lock:
-            state = self._load(moment)
+            try:
+                state = self._load(moment)
+            except LedgerUnavailableError:
+                # The paper is already out. Say so through `recorded` rather
+                # than turning a printed receipt into an error.
+                return None, False
 
             job: dict[str, Any] | None = None
             if job_id:

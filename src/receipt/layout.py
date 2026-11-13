@@ -276,8 +276,9 @@ class Receipt:
         """Cut at the end of the receipt.
 
         The cut feeds generously: three blank lines plus the six python-escpos
-        adds itself, so the last text sits above the tear bar - about 3.3 cm in
-        all. That is what a receipt someone picks up should look like.
+        adds itself, so the last text sits above the tear bar - about 3.4 cm in
+        all, 5.4 cm at the large size, where each of those lines is twice as
+        tall. That is what a receipt someone picks up should look like.
 
         A book coming out as one continuous roll needs no cut at all. A partial
         cut (GS V 66) was measured on a TM-T20IV on 2026-09-20 and removed

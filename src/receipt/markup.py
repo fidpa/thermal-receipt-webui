@@ -104,7 +104,15 @@ _REPLACEMENTS = {
     "\u2260": "!=",
     "\u2122": "(TM)",
 }
-_TRANSLATION = str.maketrans(_REPLACEMENTS)
+# Control characters never reach the printer as text. ESC, GS, DLE and the rest
+# are the command language of the device: passed through, they would act as
+# commands the preview does not draw and the paper budget does not count. A tab
+# becomes a space, because the device jumps to a tab stop the preview cannot
+# know; the line feed is the one control character the layout needs.
+_CONTROLS = {code: None for code in (*range(0x00, 0x20), *range(0x7F, 0xA0))}
+_CONTROLS[ord("\t")] = " "
+del _CONTROLS[ord("\n")]
+_TRANSLATION = str.maketrans({**_REPLACEMENTS, **_CONTROLS})
 
 
 def normalize(text: str) -> str:
@@ -113,7 +121,8 @@ def normalize(text: str) -> str:
     Line endings are unified - browsers send breaks from a <textarea> as CRLF,
     and without normalizing them the paragraph split finds no boundary.
     Typographic characters are mapped onto their ASCII image, because CP858 does
-    not know them and the encoder would otherwise print a '?'.
+    not know them and the encoder would otherwise print a '?'. Control
+    characters other than the line feed are removed, a tab becomes a space.
 
     Runs before every layout call, never after: the replacements change the
     length ('...' is three characters where the ellipsis was one), and wrapping

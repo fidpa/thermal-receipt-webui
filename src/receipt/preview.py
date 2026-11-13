@@ -118,7 +118,17 @@ def _cell(state: PrintState) -> tuple[int, int]:
     return cell_w * state.width_mul, cell_h * state.height_mul
 
 
-def render(data: bytes, encoding: str = "cp858") -> Image.Image:
+class TooLongError(ValueError):
+    """The byte stream would produce more paper than the caller allows."""
+
+    def __init__(self, height_dots: int) -> None:
+        super().__init__(f"{height_dots} dots of paper")
+        self.height_dots = height_dots
+
+
+def render(
+    data: bytes, encoding: str = "cp858", *, max_height_dots: int | None = None
+) -> Image.Image:
     """Translate ESC/POS bytes into a preview image.
 
     Unknown control sequences are skipped rather than raising: the preview
@@ -128,14 +138,21 @@ def render(data: bytes, encoding: str = "cp858") -> Image.Image:
         data: Raw ESC/POS byte stream, for instance from escpos.printer.Dummy.
         encoding: Code page used to decode printable characters. CP858 covers
             the German umlauts and is what layout.py forces.
+        max_height_dots: Upper bound on the image height. Checked before the
+            image is allocated, so a stream of nothing but line feeds cannot
+            claim gigabytes of memory. None means no bound.
 
     Returns:
         A greyscale image at print width (576 px), height following the content.
+
+    Raises:
+        TooLongError: The stream is taller than max_height_dots.
     """
     lines: list[list[tuple[str, PrintState]]] = [[]]
     # Height of a line that stays empty. An empty line has no character to read
-    # the cell metrics from, and a fixed fallback would advance a blank line in
-    # font B by font A's 24 dots while the printer advances 17.
+    # the cell metrics from, so the print state at its line feed decides. Below
+    # LINE_FEED_DOTS that changes nothing (_paint takes the larger of the two);
+    # it matters for a blank line at double height or more.
     blank_heights: list[int] = [FONT_CELLS[FONT_A][1]]
     cuts: set[int] = set()
     state = PrintState()
@@ -168,7 +185,7 @@ def render(data: bytes, encoding: str = "cp858") -> Image.Image:
             lines[-1].append((char, state.copy()))
             pos += 1
 
-    return _paint(lines, cuts, blank_heights)
+    return _paint(lines, cuts, blank_heights, max_height_dots)
 
 
 def _handle_esc(data: bytes, pos: int, state: PrintState, newline: Callable[[int], None]) -> int:
@@ -241,12 +258,15 @@ def _paint(
     lines: list[list[tuple[str, PrintState]]],
     cuts: set[int],
     blank_heights: list[int],
+    max_height_dots: int | None = None,
 ) -> Image.Image:
     """Paint the collected lines into an image."""
     heights = [
         max(LINE_FEED_DOTS, max((_cell(s)[1] for _, s in line), default=blank_heights[index]))
         for index, line in enumerate(lines)
     ]
+    if max_height_dots is not None and sum(heights) > max_height_dots:
+        raise TooLongError(sum(heights))
     image = Image.new("L", (WIDTH_DOTS, max(sum(heights), CELL_H)), 255)
     draw = ImageDraw.Draw(image)
     y = 0
@@ -282,9 +302,9 @@ def _paint(
 def paper_cm(height_dots: int) -> float:
     """Convert the image height into centimetres of paper.
 
-    Counts only what the byte stream produces. What the printer feeds on top of
-    that, so the cut lands behind the last character, is added by the device and
-    can only be measured there.
+    Counts only what the byte stream produces, the feed before a cut included.
+    The stub that stays in the device after a cut and leads the next receipt is
+    not part of the stream and is not counted.
 
     Args:
         height_dots: Image height in dots, one dot per print head position.

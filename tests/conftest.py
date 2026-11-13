@@ -53,7 +53,8 @@ class FakePrinter:
         self._sock.listen(8)
         self.port = self._sock.getsockname()[1]
         self._stop = False
-        threading.Thread(target=self._serve, daemon=True).start()
+        self._server = threading.Thread(target=self._serve, daemon=True)
+        self._server.start()
 
     @property
     def jobs(self) -> list[bytes]:
@@ -65,8 +66,9 @@ class FakePrinter:
         slow runner loses.
         """
         with self._cond:
-            self._cond.wait_for(self._idle, timeout=5)
-            return self._jobs
+            if not self._cond.wait_for(self._idle, timeout=5):
+                raise AssertionError("fake printer still busy after 5 s")
+            return list(self._jobs)
 
     def _idle(self) -> bool:
         if self._pending:
@@ -117,7 +119,9 @@ class FakePrinter:
                 self._cond.notify_all()
 
     def close(self):
+        """Stop accepting before returning, so a later send is refused."""
         self._stop = True
+        self._server.join(timeout=1)
         self._sock.close()
 
 
@@ -152,10 +156,12 @@ def client(tmp_path):
 def printing_client(tmp_path):
     """A client that believes in a printer, without one being reachable.
 
-    Port 1 is chosen because nothing listens there, so send_to_printer fails
-    fast and the 502 path can be exercised without a socket of our own.
+    Port 1 on the loopback interface is chosen because nothing listens there:
+    the connection is refused at once, so the 502 path can be exercised without
+    a socket of our own. A documentation address would be dropped silently on
+    some networks and cost the full timeout instead.
     """
-    app = create_app(printer="192.0.2.50:1", state_dir=tmp_path)
+    app = create_app(printer="127.0.0.1:1", state_dir=tmp_path)
     app.config["TESTING"] = True
     return app.test_client()
 

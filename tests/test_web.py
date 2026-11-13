@@ -13,6 +13,7 @@ import logging
 
 from receipt.printer import parse_target
 from receipt.web import (
+    MAX_LENGTH_CM,
     MAX_TEXT_CHARS,
     build,
     create_app,
@@ -231,3 +232,36 @@ def test_build_is_deterministic():
     Without this the checksum gate would reject valid jobs at random.
     """
     assert build("# Test\n---\ntext", "large") == build("# Test\n---\ntext", "large")
+
+
+def test_injected_commands_leave_the_byte_stream_unchanged():
+    """Text with control characters builds exactly the bytes of the text without."""
+    assert build("x \x1bJ\xfe end") == build("x J\xfe end")
+    assert build("# a\x1dV\x00b") == build("# aVb")
+
+
+def test_a_receipt_longer_than_the_bound_is_refused(client):
+    """Line feeds cost one character each; the paper bound catches what that misses."""
+    response = client.post("/api/preview", json={"text": "a" + "\n" * 19_998 + "b"})
+    assert response.status_code == 413
+    body = response.get_json()
+    assert body["error"] == "too_long"
+    assert f"{MAX_LENGTH_CM:.0f} cm" in body["message"]
+
+
+def test_the_longest_text_at_the_large_size_still_fits(client):
+    """The bound leaves room for the character cap at every size."""
+    text = ("word " * (MAX_TEXT_CHARS // 5))[:MAX_TEXT_CHARS]
+    response = client.post("/api/preview", json={"text": text, "size": "large"})
+    assert response.status_code == 200
+    assert response.get_json()["length_cm"] < MAX_LENGTH_CM
+
+
+def test_an_oversized_body_is_refused_before_it_is_parsed(client):
+    """The text is short; the body around it is what is too large.
+
+    The answer keeps the shared shape even for Flask's own refusal.
+    """
+    response = client.post("/api/preview", json={"text": "x", "padding": "x" * 600_000})
+    assert response.status_code == 413
+    assert response.get_json()["error"] == "too_long"

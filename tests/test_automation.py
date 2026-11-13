@@ -11,12 +11,14 @@ retry must not print, and a deliberate reprint must.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 
 import pytest
 from conftest import HEALTHY, OUT_OF_PAPER, FakePrinter
 
+import receipt.jobs as jobs_module
 from receipt.audit import FILENAME as AUDIT_FILENAME
 from receipt.jobs import CONFIRM_DELAY_SECONDS, FREE_HOUR_LIMIT_CM
 from receipt.printer import open_roll
@@ -390,13 +392,16 @@ def test_a_print_that_was_not_charged_says_so(printing_app):
     assert len(printer.jobs) == 2
 
 
-def test_two_senders_at_once_get_one_receipt_each(printing_app):
-    """One worker, four threads: the print path has to serialise itself.
+def test_two_senders_at_once_cannot_share_one_gap(printing_app, monkeypatch):
+    """One worker, four threads: check, send and charge happen under one lock.
 
-    Without the lock two requests could pass the same gap in a contingent, and
-    their byte streams could interleave on the way to the device.
+    The free allowance is set so that exactly one of four equal receipts fits.
+    Without the lock all four would pass the check before the first one is
+    charged, and four sheets would come out of a gap meant for one.
     """
     client, printer, _ = printing_app
+    one = client.post("/api/preview", json={"text": "Sheet 0"}).get_json()["length_cm"]
+    monkeypatch.setattr(jobs_module, "FREE_HOUR_LIMIT_CM", one * 1.5)
     answers: list[dict] = []
     barrier = threading.Barrier(4)
 
@@ -410,12 +415,9 @@ def test_two_senders_at_once_get_one_receipt_each(printing_app):
     for thread in threads:
         thread.join()
 
-    assert [body["ok"] for body in answers] == [True] * 4
-    assert len(printer.jobs) == 4
-    # Every receipt arrived whole: four distinct checksums, four distinct byte
-    # streams, none of them spliced into another.
-    assert len({body["sha"] for body in answers}) == 4
-    assert len({bytes(job) for job in printer.jobs}) == 4
+    assert sorted(body["ok"] for body in answers) == [False, False, False, True]
+    assert [body["error"] for body in answers if not body["ok"]] == ["budget_exceeded"] * 3
+    assert len(printer.jobs) == 1
 
 
 def test_a_502_leaves_the_key_free_but_marks_the_job(printing_app, tmp_path):
@@ -560,3 +562,43 @@ def test_an_invalid_cut_value_is_refused(printing_app):
         assert response.get_json()["error"] == "bad_request"
     assert printer.jobs == []
     assert client.post("/api/preview", json={"text": "x", "cut": "nope"}).status_code == 400
+
+
+def test_an_unreadable_ledger_stops_printing(printing_app):
+    """Treated as empty, it would forget every key and be overwritten.
+
+    A retry under a key that was already printed would then print again.
+    """
+    client, printer, state_dir = printing_app
+    assert client.post("/api/print", json={"text": "x", "key": "k1"}).get_json()["ok"] is True
+    ledger = state_dir / "jobs.json"
+    if os.geteuid() == 0:
+        pytest.skip("root reads the file regardless of its mode")
+    ledger.chmod(0)
+    try:
+        response = client.post("/api/print", json={"text": "x", "key": "k1"})
+    finally:
+        ledger.chmod(0o600)
+    assert response.status_code == 503
+    assert response.get_json()["error"] == "ledger_unavailable"
+    assert len(printer.jobs) == 1
+    assert json.loads(ledger.read_text())["keys"]["k1"]["sha"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"version": 1, "jobs": []}',
+        '{"version": 1, "jobs": {"a": 5}}',
+        '{"version": 1, "free": {"198.51.100.9": [5]}}',
+        '{"version": 1, "keys": {"k": {"at_ts": 9e12}}}',
+    ],
+)
+def test_a_ledger_of_the_wrong_shape_does_not_stop_the_service(printing_app, content):
+    """Valid JSON from a hand edit is treated like unparsable JSON, not as a 500."""
+    client, printer, state_dir = printing_app
+    (state_dir / "jobs.json").write_text(content)
+    assert client.get("/api/printer").status_code == 200
+    body = client.post("/api/print", json={"text": "x", "key": "k"}).get_json()
+    assert body["ok"] is True
+    assert len(printer.jobs) == 1

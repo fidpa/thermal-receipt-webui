@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Called by release.yml, so a tag cannot publish a release past a red lint.
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   ruff:
@@ -15,9 +20,10 @@ jobs:
         with:
           python-version: '3.12'
       # Pinned on purpose: an unpinned install once pulled a Ruff whose default
-      # rule set had grown, turning this job red on an unchanged tree.
+      # rule set had grown, turning this job red on an unchanged tree. The pin
+      # lives in requirements-dev.txt only, so CI and a local run cannot drift.
       - name: Install ruff
-        run: pip install ruff==0.9.6
+        run: pip install "$(grep -m1 '^ruff==' requirements-dev.txt)"
       - name: Lint
         run: ruff check src/ tests/
       - name: Format check

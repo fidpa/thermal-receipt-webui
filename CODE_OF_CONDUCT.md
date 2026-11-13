@@ -6,7 +6,7 @@ By participating in this project, as a contributor, maintainer, issue reporter o
 
 ## Reporting
 
-To report a concern, open a [GitHub Discussion](https://github.com/fidpa/thermal-receipt-webui/discussions) or contact the maintainers via [GitHub Issues](https://github.com/fidpa/thermal-receipt-webui/issues). All reports are handled confidentially.
+To report a concern privately, use the private reporting form on the repository's [Security tab](https://github.com/fidpa/thermal-receipt-webui/security); it reaches the maintainer only. [GitHub Issues](https://github.com/fidpa/thermal-receipt-webui/issues) are public, so use them only for matters that can be discussed in the open.
 
 ## Full Text
 

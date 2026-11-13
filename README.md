@@ -1,4 +1,4 @@
-# thermal-receipt-webui
+# Thermal Receipt Web UI
 
 ![Lint](https://github.com/fidpa/thermal-receipt-webui/actions/workflows/lint.yml/badge.svg)
 ![Test](https://github.com/fidpa/thermal-receipt-webui/actions/workflows/test.yml/badge.svg)
@@ -63,9 +63,10 @@ picture is wrong, the paper is wrong in exactly the same way.
 > be 12x24 dots and Font B 9x17, from the TM-T20IV datasheet. The line feed has
 > been measured on paper, the character cells have not. What *is* verified is
 > that the preview renders the same byte stream the printer receives, and that the
-> print path compares a checksum before sending. `FONT_CELLS` in
-> `src/receipt/preview.py` is the single place to correct if the datasheet is
-> wrong.
+> print path compares a checksum before sending. If the datasheet is wrong,
+> correct `FONT_CELLS` in `src/receipt/preview.py` and `CELL_WIDTH` in
+> `src/receipt/layout.py` together: the first draws the preview, the second sets
+> the column count.
 
 - **No authentication.** Anyone who can reach the port can print. Bind to localhost
   and put a reverse proxy in front of it; see `examples/nginx.conf` and
@@ -87,9 +88,11 @@ picture is wrong, the paper is wrong in exactly the same way.
 - **Tested against one model.** The layout assumes 80 mm paper at 203 dpi with a
   576 dot print width. Other widths need `WIDTH_DOTS` changed in two places.
 - **Paper length is a lower bound.** The preview counts what the byte stream
-  produces, using the device's line feed of `LINE_FEED_DOTS` per line. What the
-  printer feeds on top, so the cut lands behind the last line, is added by the
-  device. `LINE_FEED_DOTS` is 30, which two prints on a TM-T20IV confirmed in
+  produces, using the device's line feed of `LINE_FEED_DOTS` per line, the feed
+  before a cut included. Not counted: raster images and QR codes (see above), the
+  stub of about 1.2 cm that stays in the device after a cut and leads the next
+  receipt, and the cut put in front of a receipt that follows a roll left
+  standing. `LINE_FEED_DOTS` is 30, which two prints on a TM-T20IV confirmed in
   both fonts. If your model advances a different amount per line, correct that
   constant in `src/receipt/preview.py`.
 
@@ -227,9 +230,17 @@ A port can be spelled out because port 9100 is also the default of the Prometheu
 node exporter, which makes a printer awkward to simulate locally otherwise.
 
 The input text is capped at 20,000 characters, about 1.7 m of paper at the normal
-size; beyond that both endpoints answer HTTP 413. Rendering grows linearly with
-the text, so a log file pasted in by accident would otherwise exhaust the request
-timeout and the memory of the worker. The constant is `MAX_TEXT_CHARS` in `src/receipt/web.py`.
+size, and a single receipt at 600 cm of paper; beyond either, both endpoints
+answer HTTP 413. The second bound exists because a line feed costs one character
+and a whole line of paper, and the renderer checks it before it allocates the
+image. Request bodies over 512 KB are refused before they are parsed. Rendering
+grows linearly with the text, so a log file pasted in by accident would otherwise
+exhaust the request timeout and the memory of the worker. The constants are
+`MAX_TEXT_CHARS` and `MAX_LENGTH_CM` in `src/receipt/web.py`.
+
+Control characters in the text are removed before the layout, a tab becomes a
+space: ESC, GS and DLE are the printer's command language, and passed through
+they would act on the device without showing in the preview.
 
 ## CLI Reference
 
@@ -254,7 +265,7 @@ options:
                         type size for the free text receipt (default normal)
   --preview PREVIEW     write a PNG preview to this file
   --host HOST           printer address, optionally with :port; without it
-                        RECEIPT_PRINTER is used
+                        RECEIPT_PRINTER is used, unless --preview is given
   --verbose             debug output
 ```
 
@@ -286,10 +297,15 @@ echo "Milk, bread, coffee" | python -m receipt.cli - --title Shopping
 ```
 
 `--host` may be omitted when `RECEIPT_PRINTER` is set, so the address stays in
-one place. What gets printed also lands in the same history the web interface
-shows, so there is one list of what came out of the device.
+one place. Before sending, the command line asks the printer about paper, cover
+and faults, as the web interface does, and exits with 1 on a refusal. It keeps no
+keys and no paper budget; those belong to the service. What gets printed also
+lands in the same history the web interface shows, so there is one list of what
+came out of the device.
 
-Rendering a preview first costs nothing and shows what the paper will look like:
+Rendering a preview first costs nothing and shows what the paper will look like.
+`--preview` on its own never falls back to `RECEIPT_PRINTER`; to preview and
+print in one go, give `--host` as well:
 
 ```bash
 python -m receipt.cli - --text "A short note" --preview /tmp/note.png
@@ -323,7 +339,7 @@ never on `message`. Refusals from a reverse proxy in front of the service (502,
 |---------|------|------|------------|
 | `bad_request` | 400 | A field is missing, of the wrong type or out of range | Fix the sender; retrying will not help |
 | `empty_text` | 400 | `text` missing or only whitespace | Same |
-| `too_long` | 413 | More than `MAX_TEXT_CHARS` characters | Split the text |
+| `too_long` | 413 | More than `MAX_TEXT_CHARS` characters, more than `MAX_LENGTH_CM` of paper, or a body over 512 KB | Split the text |
 | `no_printer` | 409 | No printer configured | Ask the operator |
 | `stale_preview` | 409 | The `sha` sent does not match the text | Only the web interface sends `sha`; a program leaves it out |
 | `key_conflict` | 409 | `key` already stands for **different** bytes | The key is spent, pick another |
@@ -336,6 +352,7 @@ never on `message`. Refusals from a reverse proxy in front of the service (502,
 | `not_found` | 404 | No such path | Check the address |
 | `method_not_allowed` | 405 | Wrong HTTP method | Same |
 | `internal` | 500 | Unexpected fault in the service | Check the log; a retry may help |
+| `ledger_unavailable` | 503 | The job ledger exists but cannot be read; nothing is printed until it can | Ask the operator; keys and budget cannot be vouched for meanwhile |
 
 Only `budget_exceeded` is about paper. It means "come back later" and carries
 `Retry-After`.
@@ -344,7 +361,7 @@ Only `budget_exceeded` is about paper. It means "come back later" and carries
 (`Retry-After: 1830`), never a date. The same number appears in the body as
 `budget.retry_after_seconds`, where it is `null` when waiting will not help.
 
-### POST /api/print
+### `POST /api/print`
 
 | Field | Type | Required | Meaning |
 |-------|------|----------|---------|
@@ -397,13 +414,14 @@ not match what is printed.
 
 | `cut` | What the printer does | Extra paper per receipt |
 |-------|-----------------------|-------------------------|
-| `true` (default) | Nine lines of feed, then a full cut (`ESC d 6`, `GS V 0`) | **about 3.3 cm** |
+| `true` (default) | Nine lines of feed, then a full cut (`ESC d 6`, `GS V 0`) | **about 3.4 cm**, 5.4 cm at the large size |
 | `false` | nothing - the paper stays put and the next receipt follows straight on | **0 cm** |
 
 Any other value - including `"full"`, `"partial"`, `1` or `null` - answers
 `400 bad_request`. The response carries the mode back as `cut`.
 
-Over a book of 40 sections, `false` saves about **1.3 m of paper**.
+Over a book of 40 sections at the normal size, `false` saves about **1.35 m of
+paper**.
 
 #### Why there is no partial cut (measured 2026-09-20)
 
@@ -421,8 +439,9 @@ left out. What the paper showed:
 `false` wins on every count: zero centimetres, no seam, text running straight
 on. That left the partial cut without a use case.
 
-**A full cut carries no such surcharge.** `GS V 0` cuts wherever the blade currently sits and does not drive
-to the cutting position itself; only `GS V 65 n` and `GS V 66 n` do. The nine
+**A full cut carries no such surcharge.** `GS V 0` cuts wherever the blade
+currently sits and does not drive to the cutting position itself; only
+`GS V 65 n` and `GS V 66 n` do. The nine
 lines of feed are therefore real feed commands, rendered by the preview and
 counted in full by `length_cm`. The blade offset only moves where the blank
 paper sits: the cut lands about 2.2 cm behind the last line, and the remaining
@@ -530,7 +549,7 @@ What the service cannot notice: a printer that lost power between two receipts a
 with it its buffer. `confirmed_seq` is the service's best knowledge, not proof from
 the paper.
 
-### GET /api/job/&lt;id&gt;
+### `GET /api/job/<id>`
 
 Returns `job` (the same shape as above), `keys` (every key of the job, oldest
 first) and `printer`. A job stays resumable for seven days, and **`final` is

@@ -130,3 +130,13 @@ def test_line_endings_are_unified():
 def test_the_warning_counts_what_gets_printed():
     """An ellipsis is one character in the input and three on the paper."""
     assert longest_word("\u2026" * 30) == 90
+
+
+def test_control_characters_never_reach_the_printer():
+    """ESC, GS, DLE and the rest are the device's command language, not text."""
+    assert normalize("a\x1bJ\xfeb\x1dV\x00c\x10\x14\x01d\x7f\x85e") == "aJ\xfebVcde"
+
+
+def test_a_tab_becomes_a_space_and_the_line_feed_stays():
+    """The device jumps to a tab stop the preview cannot know."""
+    assert normalize("a\tb\nc") == "a b\nc"

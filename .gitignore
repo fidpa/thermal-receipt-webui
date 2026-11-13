@@ -8,6 +8,7 @@ TODO.md
 NOTES.md
 *_POST.md
 *_TEMPLATE.md
+!.github/*_TEMPLATE.md
 *.private
 *.draft
 docs/intern
@@ -46,6 +47,10 @@ venv/
 .pytest_cache/
 
 # Build / test
+build/
+dist/
+.coverage
+htmlcov/
 *.tmp
 coverage/
 .bats-cache/

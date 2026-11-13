@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Called by release.yml, so a tag cannot publish a release past red tests.
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   pytest:
@@ -21,9 +26,8 @@ jobs:
       # but naming the package keeps the job honest if that ever changes.
       - name: Install fonts
         run: sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+      # The same pins as a local run: requirements-dev.txt carries pytest.
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest
+        run: pip install -r requirements-dev.txt
       - name: Run tests
         run: python -m pytest tests/

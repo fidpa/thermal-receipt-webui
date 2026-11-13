@@ -39,10 +39,10 @@ from werkzeug.exceptions import HTTPException
 
 from . import audit, jobs
 from .history import FILENAME, History, default_state_dir
-from .jobs import Ledger
+from .jobs import Ledger, LedgerUnavailableError
 from .layout import DEFAULT_SIZE, SIZES
 from .markup import from_text, longest_word
-from .preview import paper_cm, render
+from .preview import DPI, TooLongError, paper_cm, render
 from .printer import is_reachable, parse_target, read_status, send_receipt
 
 DEFAULT_HOST = "127.0.0.1"
@@ -55,6 +55,13 @@ DEFAULT_PORT = 8094
 # blow both the gunicorn timeout and the memory, and with a single worker that
 # takes the whole interface with it.
 MAX_TEXT_CHARS = 20_000
+# Upper bound on the paper a single receipt may take. The character cap alone
+# does not bound it: a text of nothing but line feeds costs one character and a
+# full line of paper each. Six metres leave room for the longest text at the
+# large size (20,000 characters come to about 5.6 m), and the renderer checks
+# the bound before it allocates the image.
+MAX_LENGTH_CM = 600.0
+MAX_HEIGHT_DOTS = round(MAX_LENGTH_CM / 2.54 * DPI)
 # Keys and job identifiers never become file names, but they do go into the
 # state on disk. A cap keeps it small and readable.
 MAX_KEY_CHARS = 128
@@ -259,6 +266,21 @@ def too_long_message(length: int) -> str:
     return f"Text is {length} characters long, at most {MAX_TEXT_CHARS} are provided for."
 
 
+def too_much_paper_message(error: TooLongError) -> str:
+    """Explain a refusal for a receipt that would run too long.
+
+    Args:
+        error: The refusal from the renderer.
+
+    Returns:
+        Message for the interface.
+    """
+    return (
+        f"The receipt would take {paper_cm(error.height_dots):.0f} cm of paper, "
+        f"at most {MAX_LENGTH_CM:.0f} cm are provided for."
+    )
+
+
 def answer(
     ok: bool,
     message: str = "",
@@ -326,7 +348,7 @@ def paper_length_cm(data: bytes) -> float:
     Returns:
         Paper length in centimetres.
     """
-    return paper_cm(render(data).height)
+    return paper_cm(render(data, max_height_dots=MAX_HEIGHT_DOTS).height)
 
 
 def preview_data_uri(data: bytes) -> tuple[str, float]:
@@ -338,7 +360,7 @@ def preview_data_uri(data: bytes) -> tuple[str, float]:
     Returns:
         A data: URI holding a PNG, and the paper length in centimetres.
     """
-    image = render(data)
+    image = render(data, max_height_dots=MAX_HEIGHT_DOTS)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     uri = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -406,6 +428,10 @@ def create_app(printer: str | None = None, state_dir: Path | None = None) -> Fla
     # could slip through the same gap in a contingent, and two byte streams
     # could run into each other.
     app.config["PRINT_LOCK"] = threading.Lock()
+    # Bound on the request body. MAX_TEXT_CHARS is only checked once the JSON is
+    # parsed, which for a body of hundreds of megabytes is too late. 512 KB hold
+    # 20,000 characters even when every one of them arrives as a \uXXXX escape.
+    app.config["MAX_CONTENT_LENGTH"] = 512 * 1024
 
     @app.errorhandler(HTTPException)
     def handle_http_error(error: HTTPException) -> Any:
@@ -417,6 +443,16 @@ def create_app(printer: str | None = None, state_dir: Path | None = None) -> Fla
         status = error.code or 500
         key, message = HTTP_ERRORS.get(status, ("http_error", error.name))
         return answer(False, message, error=key, status=status)
+
+    @app.errorhandler(LedgerUnavailableError)
+    def handle_ledger_unavailable(error: LedgerUnavailableError) -> Any:
+        """An unreadable ledger stops printing instead of being overwritten."""
+        return answer(
+            False,
+            "The job ledger cannot be read; nothing is printed until it can.",
+            error="ledger_unavailable",
+            status=503,
+        )
 
     @app.errorhandler(Exception)
     def handle_unexpected(error: Exception) -> Any:
@@ -454,7 +490,12 @@ def create_app(printer: str | None = None, state_dir: Path | None = None) -> Fla
             )
 
         data = build(text, size, cut)
-        uri, length_cm = preview_data_uri(data)
+        try:
+            uri, length_cm = preview_data_uri(data)
+        except TooLongError as error:
+            return answer(
+                False, too_much_paper_message(error), error="too_long", status=413, empty=True
+            )
         overlong = longest_word(text)
         return answer(
             True,
@@ -549,7 +590,10 @@ def create_app(printer: str | None = None, state_dir: Path | None = None) -> Fla
             logger.warning("preview %s does not match print job %s", expected, actual)
             return refuse("Preview is stale, look again.", "stale_preview", 409)
 
-        length_cm = paper_length_cm(data)
+        try:
+            length_cm = paper_length_cm(data)
+        except TooLongError as error:
+            return refuse(too_much_paper_message(error), "too_long", 413)
         printer_port = app.config["PRINTER_PORT"]
 
         with app.config["PRINT_LOCK"]:

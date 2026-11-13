@@ -6,20 +6,35 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # A tag publishes nothing past red checks: both run again on the tagged commit.
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  test:
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: [lint, test]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Version in pyproject.toml matches the tag
+      - name: Both version sources match the tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           DECLARED=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          PACKAGE=$(grep -m1 '^__version__ = ' src/receipt/__init__.py | cut -d'"' -f2)
           test "$VERSION" = "$DECLARED" || {
             echo "tag v${VERSION} does not match pyproject.toml ${DECLARED}"
+            exit 1
+          }
+          test "$VERSION" = "$PACKAGE" || {
+            echo "tag v${VERSION} does not match src/receipt/__init__.py ${PACKAGE}"
             exit 1
           }
 

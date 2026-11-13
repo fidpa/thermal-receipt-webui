@@ -25,7 +25,7 @@ from .history import FILENAME, History, default_state_dir
 from .layout import DEFAULT_SIZE, SIZES
 from .markup import from_text
 from .preview import paper_cm, render
-from .printer import parse_target, send_receipt
+from .printer import parse_target, read_status, send_receipt
 from .samples import SAMPLES
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,10 @@ def main() -> int:
     parser.add_argument("--preview", type=Path, help="write a PNG preview to this file")
     parser.add_argument(
         "--host",
-        help="printer address, optionally with :port; without it RECEIPT_PRINTER is used",
+        help=(
+            "printer address, optionally with :port; without it RECEIPT_PRINTER is "
+            "used, unless --preview is given"
+        ),
     )
     parser.add_argument("--verbose", action="store_true", help="debug output")
     args = parser.parse_args()
@@ -102,8 +105,11 @@ def main() -> int:
     )
 
     # The same variable the systemd unit carries: the printer address lives in
-    # one place, not in two that can drift apart.
-    host, port = parse_target(args.host or os.environ.get("RECEIPT_PRINTER"))
+    # one place, not in two that can drift apart. A preview on its own does not
+    # fall back to it - looking at a layout must not cost paper. Previewing and
+    # printing at once takes an explicit --host.
+    fallback = None if args.preview else os.environ.get("RECEIPT_PRINTER")
+    host, port = parse_target(args.host or fallback)
     if not args.preview and not host:
         parser.error("give at least --preview or --host (or set RECEIPT_PRINTER)")
 
@@ -120,6 +126,15 @@ def main() -> int:
     ok = True
     if args.preview:
         ok = write_preview(data, args.preview) and ok
+    if host:
+        # Asked before the send, as the web interface does: an empty roll or an
+        # open cover is a refusal rather than a receipt lost in the buffer. No
+        # answer at all is not a refusal; the send then shows whether the
+        # address is reachable.
+        status = read_status(host, port)
+        if status is not None and not status.ready:
+            logger.error("printer %s not ready: %s", host, status.reason)
+            return 1
     if host and send_receipt(host, data, port):
         # Into the same history as the interface, so there is one list of what
         # came out of the device. Free text only: a sample receipt is built from

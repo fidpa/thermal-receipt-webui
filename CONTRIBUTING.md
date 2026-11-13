@@ -29,7 +29,9 @@ Additions to the renderer for sequences it does not understand yet, QR codes and
 
 ## Device assumptions
 
-The cell metrics in `FONT_CELLS` come from the TM-T20IV datasheet and have not been verified against paper. If you own the device and measure something different, that is a valuable bug report: it is the one number the whole preview rests on.
+The cell metrics come from the TM-T20IV datasheet and have not been verified against paper. They live in two places that have to agree: `FONT_CELLS` in `src/receipt/preview.py` draws the preview, `CELL_WIDTH` in `src/receipt/layout.py` sets the column count. If you own the device and measure something different, that is a valuable bug report: the whole preview rests on these numbers.
+
+The renderer draws with DejaVu Sans Mono from the Debian path `/usr/share/fonts/truetype/dejavu/` (`fonts-dejavu-core`); the tests need it too. Elsewhere, adjust `FONT_REGULAR` and `FONT_BOLD` in `src/receipt/preview.py`.
 
 ## Style
 
